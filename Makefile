@@ -17,8 +17,10 @@ LDLIBS  += -pthread
 
 all: initramfs.cpio initramfs.cpio.gz
 
-init: init.c
-	$(CROSS)$(CC) $(CFLAGS) -o $@ init.c $(LDLIBS)
+SRCS = src/init.c
+
+init: $(SRCS)
+	$(CROSS)$(CC) $(CFLAGS) -I src -o $@ $(SRCS) $(LDLIBS)
 	@ls -lh $@
 
 rootfs: init
