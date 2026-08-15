@@ -1992,18 +1992,49 @@ static int process_grp_test(void)
 {
     pid_t me = getpid();
     pid_t pp = getppid();
-    if (pp < 0) return 1;       /* real error */
-    if (pp == 0)
-        logts("  parent is PID 0 (we are PID 1)\n");
-    if (getpgid(me) != me) return 1;
+    pid_t mypgrp;
+
+    if (pp < 0) return 1;               /* real error */
+
+    if (pp == 0) {
+        /* PID 1 special case: the kernel reports init's parent as PID 0.
+         * That is expected for the initial userspace process, not a bug. */
+        if (me != 1) return 1;          /* ppid 0 but not PID 1: inconsistent */
+        logts("  parent is PID 0 (we are PID 1) -- expected for init\n");
+
+        /* init must be the leader of its own process group (pgrp == pid) */
+        mypgrp = getpgid(me);
+        if (mypgrp < 1 || mypgrp != me) return 1;
+
+        /* init is already a session leader, so setsid() must refuse with
+         * EPERM.  (If some odd setup let it succeed, verify the result.)
+         * This branch never forks, kills or signals: safe to run as PID 1. */
+        errno = 0;
+        if (setsid() == -1) {
+            if (errno != EPERM) return 1;
+        } else if (getpgrp() != me) {
+            return 1;
+        }
+
+        return 0;                       /* PID 1: all good */
+    }
+
+    /* Normal child process: the parent must be a real, live process
+     * (never PID 0) and the process-group/session invariants must hold. */
+    if (pp == me) return 1;             /* cannot be our own parent */
+    if (kill(pp, 0) != 0) return 1;     /* signal 0 = pure existence probe */
+
+    if (getpgid(me) < 1) return 1;
+
     if (setsid() == -1) {
-        /* Already a session leader (e.g. PID 1). EPERM means "already leader". */
+        /* already a session leader -- that is fine */
         if (errno == EPERM && getpgid(me) == me) {
+            logts("  already a session leader\n");
             return 0;
         }
         return 1;
     }
-    /* We became a session leader — our pgrp must equal our pid */
+    /* became a session leader: our pgrp must equal our pid */
     if (getpgrp() != me) return 1;
     return 0;
 }
