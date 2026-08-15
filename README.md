@@ -16,7 +16,7 @@ libs, no external tools). It:
    *all* of them, plus `/dev/kmsg` so the log survives into `dmesg`.
    The preferred console (flag `C` in `/proc/consoles`) is not re-opened,
    so lines are never doubled on the same UART.
-3. runs a 51-test suite, each reporting `[PASS]` / `[FAIL]` / `[SKIP]`:
+3. runs a 52-test suite, each reporting `[PASS]` / `[FAIL]` / `[SKIP]`:
    sysinfo, procfs/sysfs integrity, device nodes, tmpfs ops + stress,
    malloc churn, mmap anon + mlock, CPU arithmetic + threads, scheduler,
    timers/hrtimers, signals, pipe IPC, fork+exec, fork storm, loopback
@@ -28,8 +28,11 @@ libs, no external tools). It:
    enumeration, rlimits, clock resolution, fd duplication, poll/select,
    sendfile, splice, inotify, UDP loopback, AF_UNIX datagrams, statvfs,
    madvise, mlockall, fallocate, process groups, sched_getcpu,
-   posix_fadvise, pseudo-terminals, and a raw framebuffer test (SKIPs
-   when no /dev/fb0 exists, e.g. headless systems)
+   posix_fadvise, pseudo-terminals, a raw framebuffer test (SKIPs when
+   no /dev/fb0 exists, e.g. headless systems), and file permission
+   bits (rwx: umask application at file creation, chmod/fchmod, the
+   setuid/setgid/sticky special bits, directory modes, and read-access
+   enforcement via a child dropped to uid 65534)
 4. prints a summary and then sleeps forever (or powers off / reboots /
    panics — see knobs below)
 
