@@ -1995,15 +1995,15 @@ static int process_grp_test(void)
     if (pp < 0) return 1;       /* real error */
     if (pp == 0)
         logts("  parent is PID 0 (we are PID 1)\n");
-    if (getpgid(me) < 1) return 1;
-    if (setsid() != 0) {
-        /* PID 1 may already be a session leader; that is fine. */
+    if (getpgid(me) != me) return 1;
+    if (setsid() == -1) {
+        /* Already a session leader (e.g. PID 1). EPERM means "already leader". */
         if (errno == EPERM && getpgid(me) == me) {
-            logts("  already a session leader\n");
             return 0;
         }
         return 1;
     }
+    /* We became a session leader — our pgrp must equal our pid */
     if (getpgrp() != me) return 1;
     return 0;
 }
