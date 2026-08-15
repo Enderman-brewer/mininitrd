@@ -1,0 +1,58 @@
+[    0.106944] virt/tdx: TDX not supported by the host platform
+[  0.000] ============================================================
+[  0.002] kernel test initramfs -- PID 1
+[  0.004]   kernel 7.2.0-rc7-ramify+ #2 SMP PREEMPT_DYNAMIC Fri Aug 14 19:39:27 AEST 2026 (x86_64)
+[  0.007]   intensity: all, loop=0, poweroff=0, reboot=0
+[  0.009] ---- TEST sysinfo                ----
+[  0.011]   kernel: Linux 7.2.0-rc7-ramify+ #2 SMP PREEMPT_DYNAMIC Fri Aug 14 19:39:27 AEST 2026 (x86_64)
+[  0.013]   uptime: 0.2 s
+[  0.014] [PASS] sysinfo (5 ms)
+[  0.015] ---- TEST procfs                 ----
+[  0.017]   cpuinfo: 2638 bytes (non-empty ok)
+[  0.019] [PASS] procfs (3 ms)
+[  0.020] ---- TEST sysfs                  ----
+[  0.021] [PASS] sysfs (1 ms)
+[  0.026] ---- TEST devfs                  ----
+[  0.028] [SKIP] devfs (1 ms)
+[  0.029] ---- TEST fs_tmpfs               ----
+[  0.031] [PASS] fs_tmpfs (1 ms)
+[  0.032] ---- TEST fs_stress              ----
+[  0.042] [PASS] fs_stress (10 ms)
+[  0.051] ---- TEST mem_malloc             ----
+[  0.297] [PASS] mem_malloc (245 ms)
+[  0.298] ---- TEST mem_mmap               ----
+[  0.305] [PASS] mem_mmap (6 ms)
+[  0.306] ---- TEST mem_mlock              ----
+[  0.307] [PASS] mem_mlock (1 ms)
+[  0.308] ---- TEST cpu_calc               ----
+[  0.328]   cpu burn checksum: a422e74e ok
+[  0.336] [PASS] cpu_calc (27 ms)
+[  0.337] ---- TEST cpu_threads            ----
+[  0.340] [PASS] cpu_threads (2 ms)
+[  0.341] ---- TEST sched                  ----
+[  0.342]   affinity: 2 cpu(s)
+[  0.342] [PASS] sched (1 ms)
+[  0.343] ---- TEST timer                  ----
+[  0.395]   50ms sleep took 50.1 ms
+[  0.427] [PASS] timer (83 ms)
+[  0.427] ---- TEST signal                 ----
+[  0.449] [PASS] signal (21 ms)
+[  0.450] ---- TEST pipe_ipc               ----
+[  0.453] [PASS] pipe_ipc (2 ms)
+[  0.454] ---- TEST exec                   ----
+[  0.456] [PASS] exec (2 ms)
+[  0.457] ---- TEST fork_storm             ----
+[  0.471] [PASS] fork_storm (13 ms)
+[  0.485] ---- TEST net_loopback           ----
+[  0.488] [PASS] net_loopback (2 ms)
+[  0.490] ---- TEST fs_mmap                ----
+[  0.492] [PASS] fs_mmap (1 ms)
+[  0.493] ---- TEST kmsg_scan              ----
+[  0.494]   kernel log: 28995 bytes
+[  0.495] [PASS] kmsg_scan (2 ms)
+[  0.496] ---- TEST kunit_scan             ----
+[  0.498]   no KUnit output in kernel log (not built-in) -- ok
+[  0.499] [SKIP] kunit_scan (2 ms)
+[  0.500] ============================================================
+[  0.501] kerneltest complete: 19 passed, 0 failed, 2 skipped
+[  0.502] all tests done -- sleeping forever (console alive)
