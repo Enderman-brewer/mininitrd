@@ -2201,6 +2201,11 @@ static int perms_test(void)
     mode_t oldmask = umask(0);
     int r = 1;                    /* pessimist: fail unless proven */
 
+    /* mirrored from <linux/fs.h> for the +i bit — build without kernel headers */
+    #define FS_IOC_GETFLAGS  0x80046601
+    #define FS_IOC_SETFLAGS  0x40086602
+    #define FS_IMMUTABLE_FL  0x00000010
+
     /* 1) umask 0022 applied at creation: 0666 -> 0644 */
     umask(0022);
     snprintf(path, sizeof(path), "/tmp/perms_%d", (int)getpid());
