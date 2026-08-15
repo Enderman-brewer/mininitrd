@@ -2,13 +2,16 @@ name: build
 
 on:
   push:
-  pull_request:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
   build:
     name: Build initramfs
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -31,13 +34,12 @@ jobs:
             cpio -it < initramfs.cpio | grep -qx "$f"
           done
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: initramfs
-          path: |
-            initramfs.cpio
-            initramfs.cpio.gz
-            initramfs.cpio.zst
-            initramfs.cpio.xz
-          if-no-files-found: error
+      - name: Attach artifacts to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          ASSETS="initramfs.cpio initramfs.cpio.gz initramfs.cpio.zst initramfs.cpio.xz"
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" $ASSETS --title "mininitrd $TAG" --generate-notes \
+            || gh release upload "$TAG" $ASSETS --clobber
