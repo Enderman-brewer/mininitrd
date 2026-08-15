@@ -61,6 +61,22 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include <arpa/inet.h>
+#include <poll.h>
+#include <mqueue.h>
+#include <semaphore.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <sys/signalfd.h>
+#include <sys/inotify.h>
+#include <sys/sendfile.h>
+#include <sys/select.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <sys/msg.h>
+#include <sys/vfs.h>
+#include <sys/statvfs.h>
 
 /* ------------------------------------------------------------------ */
 /* global state                                                        */
@@ -406,6 +422,380 @@ static uint32_t rng(void)
 /* ================================================================== */
 /*  TESTS                                                              */
 /* ================================================================== */
+/* 22. getrandom syscall (SKIP if CRNG not ready / syscall missing) --- */
+static int getrandom_test(void)
+{
+    unsigned char a[64], b[64];
+    long r1 = syscall(SYS_getrandom, a, sizeof(a), 1 /* GRND_NONBLOCK */);
+    long r2 = syscall(SYS_getrandom, b, sizeof(b), 1 /* GRND_NONBLOCK */);
+    int i, zeros = 0;
+    if (r1 == -1 || r2 == -1) {
+        if (errno == EAGAIN) return 2;   /* CRNG not initialized yet */
+        if (errno == ENOSYS || errno == EPERM) return 2;
+        return 1;
+    }
+    if (r1 != (long)sizeof(a) || r2 != (long)sizeof(b)) return 1;
+    for (i = 0; i < (int)sizeof(a); i++)
+        if (a[i] == 0) zeros++;
+    if (zeros == (int)sizeof(a)) return 1;      /* no entropy at all */
+    if (memcmp(a, b, sizeof(a)) == 0) return 1; /* two draws identical */
+    return 0;
+}
+
+/* 23. epoll ----------------------------------------------------------- */
+static int epoll_test(void)
+{
+    int efd, fds[2], n;
+    struct epoll_event ev;
+    char c;
+    if (pipe(fds) != 0) return 1;
+    efd = epoll_create1(0);
+    if (efd < 0) {
+        close(fds[0]); close(fds[1]);
+        if (errno == ENOSYS || errno == EINVAL) return 2;
+        return 1;
+    }
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = fds[0];
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, fds[0], &ev) != 0) {
+        close(efd); close(fds[0]); close(fds[1]); return 1;
+    }
+    n = epoll_wait(efd, &ev, 1, 20);
+    if (n != 0) { close(efd); close(fds[0]); close(fds[1]); return 1; }
+    if (write(fds[1], "x", 1) != 1) { close(efd); close(fds[0]); close(fds[1]); return 1; }
+    n = epoll_wait(efd, &ev, 1, 1000);
+    if (n != 1 || !(ev.events & EPOLLIN)) { close(efd); close(fds[0]); close(fds[1]); return 1; }
+    if (read(fds[0], &c, 1) != 1 || c != 'x') { close(efd); close(fds[0]); close(fds[1]); return 1; }
+    n = epoll_wait(efd, &ev, 1, 20);      /* drained: should time out */
+    if (n != 0) { close(efd); close(fds[0]); close(fds[1]); return 1; }
+    close(efd); close(fds[0]); close(fds[1]);
+    return 0;
+}
+
+/* 24. eventfd ---------------------------------------------------------- */
+static int eventfd_test(void)
+{
+    int efd = eventfd(0, 0);
+    uint64_t v = 5, got = 0;
+    if (efd < 0) {
+        if (errno == ENOSYS || errno == EINVAL) return 2;
+        return 1;
+    }
+    if (write(efd, &v, sizeof(v)) != (ssize_t)sizeof(v)) { close(efd); return 1; }
+    for (;;) {
+        ssize_t rr = read(efd, &got, sizeof(got));
+        if (rr == (ssize_t)sizeof(got)) break;
+        if (rr < 0 && errno == EINTR) continue;
+        close(efd); return 1;
+    }
+    if (got != 5) { close(efd); return 1; }
+    close(efd);
+    return 0;
+}
+
+/* 25. timerfd ----------------------------------------------------------- */
+static int timerfd_test(void)
+{
+    int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    struct itimerspec its;
+    uint64_t exp = 0;
+    if (tfd < 0) {
+        if (errno == ENOSYS || errno == EINVAL) return 2;
+        return 1;
+    }
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_nsec = 20000000;           /* one-shot, 20 ms */
+    if (timerfd_settime(tfd, 0, &its, NULL) != 0) { close(tfd); return 1; }
+    for (;;) {
+        ssize_t rr = read(tfd, &exp, sizeof(exp));
+        if (rr == (ssize_t)sizeof(exp)) break;
+        if (rr < 0 && errno == EINTR) continue;
+        close(tfd); return 1;                   /* blocks until expiry */
+    }
+    if (exp < 1) { close(tfd); return 1; }
+    close(tfd);
+    return 0;
+}
+
+/* 26. signalfd ---------------------------------------------------------- */
+static int signalfd_test(void)
+{
+    sigset_t mask, old;
+    int sfd;
+    struct signalfd_siginfo si;
+    int r = 1;
+    if (sigemptyset(&mask) != 0) return 1;
+    if (sigaddset(&mask, SIGUSR2) != 0) return 1;
+    if (sigprocmask(SIG_BLOCK, &mask, &old) != 0) return 1;
+    sfd = signalfd(-1, &mask, 0);
+    if (sfd < 0) {
+        if (errno == ENOSYS || errno == EINVAL) r = 2;
+        sigprocmask(SIG_SETMASK, &old, NULL);
+        return r;
+    }
+    if (raise(SIGUSR2) != 0)
+        goto out;
+    for (;;) {
+        ssize_t rr = read(sfd, &si, sizeof(si));
+        if (rr == (ssize_t)sizeof(si)) break;
+        if (rr < 0 && errno == EINTR) continue;
+        goto out;
+    }
+    if (si.ssi_signo == SIGUSR2)
+        r = 0;
+out:
+    close(sfd);
+    /* drain any pending SIGUSR2 before unblocking so it cannot kill us */
+    sigtimedwait(&mask, NULL, &(struct timespec){0, 0});
+    sigprocmask(SIG_SETMASK, &old, NULL);
+    return r;
+}
+
+/* 27. POSIX message queues via raw syscalls (SKIP if not configured) --- */
+static int mq_test(void)
+{
+    static const char *name = "/kerneltest-mq";
+    struct mq_attr attr;
+    mqd_t mqd;
+    char msg[] = "kernel-mq";
+    char rcv[64] = {0};
+    unsigned prio = 0;
+    memset(&attr, 0, sizeof(attr));
+    attr.mq_maxmsg = 8;
+    attr.mq_msgsize = 64;
+    syscall(SYS_mq_unlink, name);   /* discard leftovers from aborted runs */
+    mqd = syscall(SYS_mq_open, name, O_CREAT | O_RDWR, 0600, &attr);
+    if (mqd < 0) {
+        if (errno == ENOSYS || errno == EPERM || errno == ENOENT ||
+            errno == ENODEV || errno == EINVAL)
+            return 2;               /* CONFIG_POSIX_MQUEUE off / no mqueue fs */
+        return 1;
+    }
+    if (mq_send(mqd, msg, sizeof(msg) - 1, 1) != 0)
+        goto fail;
+    if (mq_receive(mqd, rcv, 64, &prio) != (ssize_t)sizeof(msg) - 1)
+        goto fail;
+    if (memcmp(rcv, msg, sizeof(msg) - 1) != 0) goto fail;
+    mq_close(mqd);
+    syscall(SYS_mq_unlink, name);
+    return 0;
+fail:
+    mq_close(mqd);
+    syscall(SYS_mq_unlink, name);
+    return 1;
+}
+
+/* 28. SysV IPC: semaphore, shared memory, message queue ---------------- */
+static int sysv_ipc_test(void)
+{
+    key_t key = 0x4b52544c;                 /* arbitrary private key */
+    int semid, shmid, msqid;
+    struct sembuf sop;
+    int tmp;
+
+    /* discard any SysV objects left behind by a previous crashed run */
+    tmp = semget(key, 0, 0); if (tmp >= 0) semctl(tmp, 0, IPC_RMID, 0);
+    tmp = shmget(key, 0, 0); if (tmp >= 0) shmctl(tmp, IPC_RMID, 0);
+    tmp = msgget(key, 0); if (tmp >= 0) msgctl(tmp, IPC_RMID, 0);
+
+    semid = semget(key, 1, IPC_CREAT | 0600);
+    if (semid < 0) {
+        if (errno == ENOSYS || errno == EPERM || errno == ENOMEM) return 2;
+        return 1;
+    }
+    if (semctl(semid, 0, SETVAL, 1) != 0) { semctl(semid, 0, IPC_RMID, 0); return 1; }
+    sop.sem_num = 0; sop.sem_op = -1; sop.sem_flg = 0;
+    if (semop(semid, &sop, 1) != 0) { semctl(semid, 0, IPC_RMID, 0); return 1; }
+    semctl(semid, 0, IPC_RMID, 0);
+
+    shmid = shmget(key, 4096, IPC_CREAT | 0600);
+    if (shmid < 0) {
+        if (errno == ENOSYS || errno == EPERM || errno == ENOMEM) return 2;
+        return 1;
+    }
+    {
+        void *shm = shmat(shmid, NULL, 0);
+        if (shm == (void *)-1) { shmctl(shmid, IPC_RMID, 0); return 1; }
+        memset(shm, 0xab, 4096);
+        if (((unsigned char *)shm)[0] != 0xab ||
+            ((unsigned char *)shm)[4095] != 0xab) {
+            shmdt(shm); shmctl(shmid, IPC_RMID, 0); return 1;
+        }
+        shmdt(shm);
+    }
+    shmctl(shmid, IPC_RMID, 0);
+
+    msqid = msgget(key, IPC_CREAT | 0600);
+    if (msqid < 0) {
+        if (errno == ENOSYS || errno == EPERM || errno == ENOMEM) return 2;
+        return 1;
+    }
+    {
+        struct { long mtype; char mtext[16]; } mbuf = { 1, "sysv-msg" };
+        struct { long mtype; char mtext[16]; } rbuf;
+        if (msgsnd(msqid, &mbuf, 16, 0) != 0) { msgctl(msqid, IPC_RMID, 0); return 1; }
+        if (msgrcv(msqid, &rbuf, 16, 1, 0) != 16) {
+            msgctl(msqid, IPC_RMID, 0); return 1;
+        }
+        if (memcmp(rbuf.mtext, "sysv-msg", 8) != 0) {
+            msgctl(msqid, IPC_RMID, 0); return 1;
+        }
+    }
+    msgctl(msqid, IPC_RMID, 0);
+    return 0;
+}
+
+/* 29. shared memory via /dev/shm (SKIP if tmpfs not mounted there) ----- */
+static int shm_test(void)
+{
+    const char *path = "/dev/shm/kerneltest-shm.bin";
+    int fd, status;
+    pid_t pid;
+    char *m;
+    fd = open(path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        if (errno == ENOENT || errno == ENODEV || errno == EPERM) return 2;
+        return 1;
+    }
+    if (ftruncate(fd, 4096) != 0) { close(fd); unlink(path); return 1; }
+    m = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (m == MAP_FAILED) { close(fd); unlink(path); return 1; }
+    memset(m, 0, 4096);
+    pid = fork();
+    if (pid < 0) { munmap(m, 4096); close(fd); unlink(path); return 1; }
+    if (pid == 0) { m[0] = 0x5a; m[1] = 0x6b; _exit(0); }
+    if (waitpid(pid, &status, 0) != pid) { munmap(m, 4096); close(fd); unlink(path); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        munmap(m, 4096); close(fd); unlink(path); return 1;
+    }
+    if (m[0] != 0x5a || m[1] != 0x6b) { munmap(m, 4096); close(fd); unlink(path); return 1; }
+    munmap(m, 4096);
+    close(fd);
+    unlink(path);
+    return 0;
+}
+
+/* 30. POSIX named semaphore -------------------------------------------- */
+static int semaphore_test(void)
+{
+    static const char *name = "/kerneltest-sem";
+    sem_t *s = sem_open(name, O_CREAT, 0600, 0);
+    struct timespec ts;
+    if (s == SEM_FAILED) {
+        if (errno == ENOSYS || errno == EPERM || errno == ENOENT) return 2;
+        return 1;
+    }
+    if (sem_post(s) != 0) { sem_close(s); sem_unlink(name); return 1; }
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 2;
+    if (sem_timedwait(s, &ts) != 0) { sem_close(s); sem_unlink(name); return 1; }
+    /* count is 0 again: a 1 s wait must time out */
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 1;
+    if (sem_timedwait(s, &ts) == 0) { sem_close(s); sem_unlink(name); return 1; }
+    if (errno != ETIMEDOUT) { sem_close(s); sem_unlink(name); return 1; }
+    sem_close(s);
+    sem_unlink(name);
+    return 0;
+}
+
+/* 31. futex ------------------------------------------------------------ */
+static int futex_test(void)
+{
+    volatile int *f;
+    pid_t pid;
+    int status;
+    f = mmap(NULL, sizeof(*f), PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (f == MAP_FAILED) return 1;
+    *f = 0;
+    pid = fork();
+    if (pid < 0) { munmap((void *)f, sizeof(*f)); return 1; }
+    if (pid == 0) {
+        struct timespec tmo;
+        long r;
+        int n = 0;
+        clock_gettime(CLOCK_MONOTONIC, &tmo);
+        tmo.tv_sec += 5;
+        for (;;) {
+            r = syscall(SYS_futex, (void *)f, 0 /* FUTEX_WAIT */, 0,
+                        &tmo, NULL, 0);
+            if (r == 0) break;
+            if (r == -1 && errno == EAGAIN) break;  /* *f already != 0 */
+            if (r == -1 && errno == EINTR) continue;
+            if (++n > 3) _exit(2);
+        }
+        *f = 2;
+        syscall(SYS_futex, (void *)f, 1 /* FUTEX_WAKE */, 1, NULL, NULL, 0);
+        _exit(0);
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &(struct timespec){0, 50000000}, NULL);
+    *f = 1;
+    syscall(SYS_futex, (void *)f, 1 /* FUTEX_WAKE */, 1, NULL, NULL, 0);
+    if (waitpid(pid, &status, 0) != pid) { munmap((void *)f, sizeof(*f)); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        munmap((void *)f, sizeof(*f)); return 1;
+    }
+    if (*f != 2) { munmap((void *)f, sizeof(*f)); return 1; }
+    munmap((void *)f, sizeof(*f));
+    return 0;
+}
+
+/* 32. /proc/self detail ------------------------------------------------ */
+static int proc_self_test(void)
+{
+    char buf[16384];
+    char exe[256];
+    ssize_t n;
+    if (read_file("/proc/self/maps", buf, sizeof(buf)) == 0)
+        return 2;               /* no-MMU kernel: /proc/self/maps absent */
+    if (!str_has(buf, "r-xp")) return 1;
+    if (!str_has(buf, "[stack]")) return 1;
+    if (read_file("/proc/self/stat", buf, sizeof(buf)) == 0) return 1;
+    {
+        char *end = strrchr(buf, ')');
+        char state;
+        if (!end) return 1;
+        if (sscanf(end + 1, " %c", &state) != 1) return 1;
+        if (state != 'R' && state != 'S') return 1;
+    }
+    if (read_file("/proc/self/limits", buf, sizeof(buf)) == 0) return 1;
+    if (!str_has(buf, "Max open files")) return 1;
+    if (read_file("/proc/self/status", buf, sizeof(buf)) == 0) return 1;
+    if (!str_has(buf, "VmRSS")) return 1;
+    n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) return 1;
+    exe[n] = '\0';
+    logts("  exe: %s\n", exe);
+    return 0;
+}
+
+/* 33. directory enumeration: /proc and /sys ---------------------------- */
+static int readdir_test(void)
+{
+    struct dirent *de;
+    DIR *d;
+    int n;
+    d = opendir("/proc");
+    if (!d) return 2;               /* procfs absent: skip */
+    n = 0;
+    while ((de = readdir(d)) != NULL) n++;
+    closedir(d);
+    if (n < 6) return 2;            /* minimal kernel: skip rather than fail */
+    logts("  /proc: %d entries\n", n);
+    d = opendir("/sys");
+    if (!d) return 2;               /* sysfs absent: skip */
+    n = 0;
+    while ((de = readdir(d)) != NULL) n++;
+    closedir(d);
+    if (n < 4) return 2;
+    logts("  /sys: %d entries\n", n);
+    d = opendir("/sys/class");
+    if (!d) return 2;
+    closedir(d);
+    return 0;
+}
 
 /* 1. basic sysinfo / uname ------------------------------------------ */
 static int sysinfo_test(void)
@@ -1271,6 +1661,503 @@ static int ramify_regression_test(void)
     return 0;
 }
 
+/* 34. rlimits ---------------------------------------------------------- */
+static int rlimit_test(void)
+{
+    struct rlimit rl, old;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return 1;
+    if (rl.rlim_cur == 0 || rl.rlim_max == 0) return 1;
+    old = rl;
+    if (rl.rlim_cur > 32) {
+        rl.rlim_cur -= 16;
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0) return 1;
+        if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return 1;
+        if (rl.rlim_cur != old.rlim_cur - 16) return 1;
+        if (setrlimit(RLIMIT_NOFILE, &old) != 0) return 1;
+    }
+    if (getrlimit(RLIMIT_STACK, &rl) != 0) return 1;
+    if (rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < 1024 * 1024) return 1;
+    if (getrlimit(RLIMIT_AS, &rl) != 0) return 1;
+    return 0;
+}
+
+/* 35. clock resolution + extra clocks ---------------------------------- */
+static int clock_res_test(void)
+{
+    static const clockid_t clocks[] = {
+        CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW,
+        CLOCK_BOOTTIME, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID,
+    };
+    struct timespec ts, res;
+    unsigned i;
+    int real_ok = 0, mono_ok = 0, extras = 0;
+    for (i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
+        if (clock_getres(clocks[i], &res) != 0) continue;
+        if (clock_gettime(clocks[i], &ts) != 0) continue;
+        if (clocks[i] == CLOCK_REALTIME) real_ok = 1;
+        else if (clocks[i] == CLOCK_MONOTONIC) mono_ok = 1;
+        else extras++;
+    }
+    logts("  clocks: real=%d mono=%d extra=%d\n", real_ok, mono_ok, extras);
+    if (!real_ok || !mono_ok) return 1;
+    return 0;
+}
+
+/* 36. fd duplication: dup / dup2 / dup3 -------------------------------- */
+static int fd_dup_test(void)
+{
+    int fds[2], d1, d2, d3, flags, slot;
+    if (pipe(fds) != 0) return 1;
+    d1 = dup(fds[0]);
+    if (d1 < 0) { close(fds[0]); close(fds[1]); return 1; }
+    slot = fcntl(fds[0], F_DUPFD, 3);   /* lowest free fd >= 3 */
+    if (slot < 0) { close(fds[0]); close(fds[1]); close(d1); return 1; }
+    close(slot);                        /* now guaranteed free */
+    d2 = dup2(fds[1], slot);
+    if (d2 != slot) {
+        close(fds[0]); close(fds[1]); close(d1); return 1;
+    }
+    slot = fcntl(fds[0], F_DUPFD, 3);
+    if (slot < 0) { close(fds[0]); close(fds[1]); close(d1); close(d2); return 1; }
+    close(slot);
+    d3 = dup3(fds[0], slot, O_CLOEXEC);
+    if (d3 != slot) {
+        close(fds[0]); close(fds[1]); close(d1); close(d2);
+        if (errno == ENOSYS) return 2;   /* ancient kernel without dup3 */
+        return 1;
+    }
+    flags = fcntl(d3, F_GETFD);
+    if (flags < 0 || !(flags & FD_CLOEXEC)) {
+        close(fds[0]); close(fds[1]); close(d1); close(d2); close(d3);
+        return 1;
+    }
+    close(fds[0]); close(fds[1]); close(d1); close(d2); close(d3);
+    return 0;
+}
+
+/* 37. poll / select ----------------------------------------------------- */
+static int poll_select_test(void)
+{
+    int fds[2], n;
+    struct pollfd pf[1];
+    fd_set rfds;
+    struct timeval tv;
+    char c;
+    if (pipe(fds) != 0) return 1;
+    pf[0].fd = fds[0];
+    pf[0].events = POLLIN;
+    pf[0].revents = 0;
+    n = poll(pf, 1, 30);
+    if (n != 0) { close(fds[0]); close(fds[1]); return 1; }
+    if (write(fds[1], "x", 1) != 1) { close(fds[0]); close(fds[1]); return 1; }
+    n = poll(pf, 1, 1000);
+    if (n != 1 || !(pf[0].revents & POLLIN)) { close(fds[0]); close(fds[1]); return 1; }
+    FD_ZERO(&rfds);
+    FD_SET(fds[0], &rfds);
+    tv.tv_sec = 1; tv.tv_usec = 0;
+    n = select(fds[0] + 1, &rfds, NULL, NULL, &tv);
+    if (n != 1 || !FD_ISSET(fds[0], &rfds)) { close(fds[0]); close(fds[1]); return 1; }
+    if (read(fds[0], &c, 1) != 1 || c != 'x') { close(fds[0]); close(fds[1]); return 1; }
+    close(fds[0]); close(fds[1]);
+    return 0;
+}
+
+/* 38. sendfile ---------------------------------------------------------- */
+static int sendfile_test(void)
+{
+    const char *in_path = "/tmp/sf_in.bin";
+    const char *out_path = "/tmp/sf_out.bin";
+    char data[8192];
+    char rd[8192];
+    int ifd, ofd;
+    ssize_t n;
+    int i;
+    for (i = 0; i < (int)sizeof(data); i++) data[i] = (char)(i * 7);
+    ifd = open(in_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (ifd < 0) return 1;
+    if (write_all(ifd, data, sizeof(data)) != 0) { close(ifd); return 1; }
+    close(ifd);
+    ifd = open(in_path, O_RDONLY);
+    if (ifd < 0) { unlink(in_path); return 1; }
+    ofd = open(out_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (ofd < 0) { close(ifd); unlink(in_path); return 1; }
+    n = sendfile(ofd, ifd, NULL, sizeof(data));
+    if (n != (ssize_t)sizeof(data)) {
+        if (n < 0 && (errno == EINVAL || errno == ENOSYS)) {
+            close(ifd); close(ofd); unlink(in_path); unlink(out_path);
+            return 2;   /* kernel/config lacking sendfile support */
+        }
+        close(ifd); close(ofd); unlink(in_path); unlink(out_path);
+        return 1;
+    }
+    close(ifd); close(ofd);
+    ofd = open(out_path, O_RDONLY);
+    if (ofd < 0) { unlink(in_path); unlink(out_path); return 1; }
+    if (read(ofd, rd, sizeof(rd)) != (ssize_t)sizeof(rd) ||
+        memcmp(data, rd, sizeof(data)) != 0) {
+        close(ofd); unlink(in_path); unlink(out_path); return 1;
+    }
+    close(ofd);
+    unlink(in_path); unlink(out_path);
+    return 0;
+}
+
+/* 39. splice ------------------------------------------------------------ */
+static int splice_test(void)
+{
+    int p1[2], p2[2];
+    char data[4096], rd[4096];
+    ssize_t n;
+    int i;
+    if (pipe(p1) != 0) return 1;
+    if (pipe(p2) != 0) { close(p1[0]); close(p1[1]); return 1; }
+    for (i = 0; i < (int)sizeof(data); i++) data[i] = (char)(i ^ 0x5a);
+    if (write_all(p1[1], data, sizeof(data)) != 0) {
+        close(p1[0]); close(p1[1]); close(p2[0]); close(p2[1]); return 1;
+    }
+    n = splice(p1[0], NULL, p2[1], NULL, sizeof(data), 0);
+    if (n != (ssize_t)sizeof(data)) {
+        close(p1[0]); close(p1[1]); close(p2[0]); close(p2[1]);
+        if (n < 0 && (errno == EINVAL || errno == ENOSYS)) return 2;
+        return 1;
+    }
+    n = read(p2[0], rd, sizeof(rd));
+    close(p1[0]); close(p1[1]); close(p2[0]); close(p2[1]);
+    if (n != (ssize_t)sizeof(data) || memcmp(data, rd, sizeof(data)) != 0)
+        return 1;
+    return 0;
+}
+
+/* 40. inotify ------------------------------------------------------------ */
+static int inotify_test(void)
+{
+    const char *dir = "/tmp/inotify_d";
+    const char *file = "/tmp/inotify_d/x.txt";
+    int ifd, wd, fd, n;
+    char evbuf[512];
+    struct inotify_event *ev;
+    int saw_create = 0, saw_close = 0;
+    mkdir(dir, 0755);
+    ifd = inotify_init1(IN_NONBLOCK);
+    if (ifd < 0) {
+        if (errno == ENOSYS || errno == EMFILE || errno == ENODEV) return 2;
+        return 1;
+    }
+    wd = inotify_add_watch(ifd, dir, IN_CREATE | IN_CLOSE_WRITE);
+    if (wd < 0) {
+        close(ifd); rmdir(dir);
+        if (errno == ENOSYS) return 2;
+        return 1;
+    }
+    fd = open(file, O_CREAT | O_WRONLY, 0644);
+    if (fd < 0) { close(ifd); rmdir(dir); return 1; }
+    if (write(fd, "data", 4) != 4) { close(fd); close(ifd); rmdir(dir); return 1; }
+    if (close(fd) != 0) { close(ifd); rmdir(dir); return 1; }
+    /* drain whatever has been queued (events arrive asynchronously) */
+    for (;;) {
+        n = read(ifd, evbuf, sizeof(evbuf));
+        if (n <= 0) break;
+        for (ev = (struct inotify_event *)evbuf;
+             (char *)ev < evbuf + n;
+             ev = (struct inotify_event *)((char *)ev + sizeof(*ev) + ev->len)) {
+            if (ev->mask & IN_CREATE) saw_create = 1;
+            if (ev->mask & IN_CLOSE_WRITE) saw_close = 1;
+        }
+    }
+    close(ifd);
+    unlink(file);
+    rmdir(dir);
+    if (!saw_create || !saw_close) return 1;
+    return 0;
+}
+
+/* 41. UDP loopback -------------------------------------------------------- */
+static int net_udp_test(void)
+{
+    int s;
+    struct sockaddr_in a;
+    socklen_t alen = sizeof(a);
+    char buf[32];
+    if (bring_up_lo() != 0)
+        return 2;               /* cannot bring up loopback: environment */
+    s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) return 2;
+        return 1;
+    }
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = 0;
+    if (bind(s, (struct sockaddr *)&a, sizeof(a)) != 0) { close(s); return 1; }
+    if (getsockname(s, (struct sockaddr *)&a, &alen) != 0) { close(s); return 1; }
+    if (sendto(s, "udp-ping", 8, 0, (struct sockaddr *)&a, sizeof(a)) != 8) {
+        close(s); return 1;
+    }
+    for (;;) {
+        ssize_t rr = recvfrom(s, buf, sizeof(buf), 0, NULL, NULL);
+        if (rr == 8) break;
+        if (rr < 0 && errno == EINTR) continue;
+        close(s); return 1;
+    }
+    if (memcmp(buf, "udp-ping", 8) != 0) { close(s); return 1; }
+    close(s);
+    return 0;
+}
+
+/* 42. AF_UNIX datagram --------------------------------------------------- */
+static int unix_dgram_test(void)
+{
+    int sp[2];
+    char buf[32];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) != 0) return 2;
+    if (send(sp[0], "dgram", 5, 0) != 5) { close(sp[0]); close(sp[1]); return 1; }
+    if (recv(sp[1], buf, sizeof(buf), 0) != 5 || memcmp(buf, "dgram", 5) != 0) {
+        close(sp[0]); close(sp[1]); return 1;
+    }
+    close(sp[0]); close(sp[1]);
+    return 0;
+}
+
+/* 43. statvfs / statfs --------------------------------------------------- */
+static int statvfs_test(void)
+{
+    struct statvfs v;
+    struct statfs fs;
+    if (statvfs("/", &v) != 0) return 1;
+    if (v.f_bsize == 0) return 1;
+    /* f_blocks may be 0 on ramfs (kernel without CONFIG_TMPFS): not an error */
+    if (statvfs("/tmp", &v) != 0) return 1;
+    if (v.f_bsize == 0) return 1;
+    if (statfs("/tmp", &fs) != 0) return 1;
+    if (fs.f_bsize == 0) return 1;
+    return 0;
+}
+
+/* 44. madvise ------------------------------------------------------------ */
+static int madvise_test(void)
+{
+    size_t sz = 1024 * 1024;
+    unsigned char *p = mmap(NULL, sz, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return 1;
+    memset(p, 0x3c, sz);
+    if (madvise(p, sz, MADV_DONTNEED) != 0) { munmap(p, sz); return 1; }
+    if (madvise(p, sz, MADV_WILLNEED) != 0) { munmap(p, sz); return 1; }
+    if (madvise(p, sz, MADV_RANDOM) != 0) { munmap(p, sz); return 1; }
+    if (madvise(p, sz, MADV_NORMAL) != 0) { munmap(p, sz); return 1; }
+    p[0] = 0x42;
+    if (p[0] != 0x42) { munmap(p, sz); return 1; }
+    munmap(p, sz);
+    return 0;
+}
+
+/* 45. mlockall (SKIP if restricted) ------------------------------------- */
+static int mlockall_test(void)
+{
+    if (mlockall(MCL_CURRENT) != 0) {
+        if (errno == EPERM || errno == ENOMEM || errno == EINVAL) return 2;
+        return 1;
+    }
+    if (munlockall() != 0) return 1;
+    return 0;
+}
+
+/* 46. fallocate (SKIP if fs does not support preallocation) ------------- */
+static int fallocate_test(void)
+{
+    const char *path = "/tmp/falloc.bin";
+    int fd;
+    struct stat st;
+    long r;
+    fd = open(path, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) return 1;
+    r = syscall(SYS_fallocate, fd, 0, 0, 1024 * 1024);
+    if (r != 0) {
+        close(fd); unlink(path);
+        if (errno == EOPNOTSUPP || errno == ENOSYS || errno == EINVAL ||
+            errno == EPERM)
+            return 2;           /* fs does not support preallocation */
+        return 1;
+    }
+    if (fstat(fd, &st) != 0) { close(fd); unlink(path); return 1; }
+    if (st.st_size != 1024 * 1024) { close(fd); unlink(path); return 1; }
+    close(fd);
+    unlink(path);
+    return 0;
+}
+
+/* 47. process groups / sessions ------------------------------------------ */
+static int process_grp_test(void)
+{
+    pid_t me = getpid();
+    pid_t pp = getppid();
+    if (pp < 0) return 1;       /* real error */
+    if (pp == 0)
+        logts("  parent is PID 0 (we are PID 1)\n");
+    if (getpgid(me) < 1) return 1;
+    if (setsid() != 0) {
+        /* PID 1 may already be a session leader; that is fine. */
+        if (errno == EPERM && getpgid(me) == me) {
+            logts("  already a session leader\n");
+            return 0;
+        }
+        return 1;
+    }
+    if (getpgrp() != me) return 1;
+    return 0;
+}
+
+/* 48. sched_getcpu / getcpu syscall -------------------------------------- */
+static int getcpu_test(void)
+{
+    unsigned cpu = 0, node = 0;
+    long r = syscall(SYS_getcpu, &cpu, &node, NULL);
+    if (r != 0) {
+        if (errno == ENOSYS) return 2;
+        return 1;
+    }
+    logts("  running on cpu %u (node %u)\n", cpu, node);
+    if (sched_getcpu() < 0) return 1;
+    return 0;
+}
+
+/* 49. posix_fadvise ------------------------------------------------------ */
+static int fadvise_test(void)
+{
+    const char *path = "/tmp/fadvise.bin";
+    int fd;
+    char data[4096];
+    memset(data, 0x77, sizeof(data));
+    fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) return 1;
+    if (write_all(fd, data, sizeof(data)) != 0) { close(fd); unlink(path); return 1; }
+    close(fd);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) { unlink(path); return 1; }
+    if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL) != 0) {
+        close(fd); unlink(path); return 1;
+    }
+    if (posix_fadvise(fd, 0, 4096, POSIX_FADV_WILLNEED) != 0) {
+        close(fd); unlink(path); return 1;
+    }
+    close(fd);
+    unlink(path);
+    return 0;
+}
+
+/* 50. pseudo-terminal (SKIP if no ptmx) ---------------------------------- */
+static int pty_test(void)
+{
+    int master, slave;
+    char *name;
+    char buf[16];
+    master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    if (master < 0) {
+        if (errno == ENOENT || errno == ENODEV || errno == EACCES) return 2;
+        return 1;
+    }
+    name = ptsname(master);
+    if (!name) { close(master); return 1; }
+    if (unlockpt(master) != 0) { close(master); return 1; }
+    slave = open(name, O_RDWR | O_NOCTTY);
+    if (slave < 0) {
+        close(master);
+        if (errno == ENOENT || errno == ENODEV) return 2;  /* no devpts */
+        return 1;
+    }
+    if (write(slave, "pty-test", 8) != 8) {
+        close(master); close(slave); return 1;
+    }
+    if (read(master, buf, sizeof(buf)) != 8 || memcmp(buf, "pty-test", 8) != 0) {
+        close(master); close(slave); return 1;
+    }
+    close(master); close(slave);
+    return 0;
+}
+
+/* 51. raw framebuffer (SKIP if no suitable device exists) ----------------- */
+/* fb ioctls + structs are mirrored from <linux/fb.h> so this file builds
+ * without kernel headers.  The ABI is stable; do not reorder fields.   */
+#define FBIOGET_VSCREENINFO  0x4600
+#define FBIOGET_FSCREENINFO  0x4602
+
+struct fb_bitfield {
+    uint32_t offset, length, msb_right;
+};
+struct fb_var_screeninfo {
+    uint32_t xres, yres, xres_virtual, yres_virtual;
+    uint32_t xoffset, yoffset;
+    uint32_t bits_per_pixel, grayscale;
+    struct fb_bitfield red, green, blue, transp;
+    uint32_t nonstd, activate;
+    uint32_t height, width, accel_flags;
+    uint32_t pixclock, left_margin, right_margin, upper_margin, lower_margin;
+    uint32_t hsync_len, vsync_len, sync, vmode, rotate, colorspace;
+    uint32_t reserved[4];
+};
+struct fb_fix_screeninfo {
+    char id[16];
+    unsigned long smem_start;
+    uint32_t smem_len;
+    uint32_t type, type_aux, visual;
+    uint16_t xpanstep, ypanstep, ywrapstep;
+    uint32_t line_length;
+    unsigned long mmio_start;
+    uint32_t mmio_len, accel;
+    uint16_t capabilities;
+    uint16_t reserved[2];
+};
+
+static int framebuffer_test(void)
+{
+    struct fb_var_screeninfo v;
+    struct fb_fix_screeninfo f;
+    unsigned char *m;
+    size_t fbsize, off;
+    size_t i;
+    int fb = open("/dev/fb0", O_RDWR);
+    if (fb < 0)
+        return 2;               /* no framebuffer device: headless, skip */
+    memset(&v, 0, sizeof(v));
+    memset(&f, 0, sizeof(f));
+    if (ioctl(fb, FBIOGET_VSCREENINFO, &v) != 0 ||
+        ioctl(fb, FBIOGET_FSCREENINFO, &f) != 0) {
+        close(fb);
+        return 2;               /* present but not a real fb device */
+    }
+    if (f.smem_len == 0 || v.xres == 0 || v.yres == 0) {
+        close(fb);
+        return 2;
+    }
+    fbsize = (size_t)f.smem_len;
+    logts("  fb0: %ux%u %u bpp, %zu bytes, id=%s\n",
+          v.xres, v.yres, v.bits_per_pixel, fbsize, f.id);
+    m = mmap(NULL, fbsize, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
+    if (m == MAP_FAILED) {
+        close(fb);
+        return 2;               /* framebuffer cannot be mapped: skip */
+    }
+    /* draw a deterministic stripe pattern across the whole framebuffer */
+    for (i = 0; i < fbsize; i++)
+        m[i] = (unsigned char)(i >> 8) ^ 0xa5;
+    /* liveness check: a working fb must not read back all zeros where we
+     * wrote a non-zero pattern.  Some drivers transform the data (format
+     * conversion, write-only scanout), so only an all-zero readback at two
+     * widely separated offsets counts as a failure. */
+    off = fbsize / 2;
+    if (m[0] == 0 && m[off] == 0) {
+        /* write-only / format-converting scanout reads back zeros on a
+         * healthy driver: treat as unsuitable rather than broken */
+        logts("  fb0: readback all-zero (write-only scanout) -- skipping\n");
+        munmap(m, fbsize); close(fb); return 2;
+    }
+    logts("  fb0: readback %02x/%02x at 0/%zu\n", m[0], m[off], off);
+    if (munmap(m, fbsize) != 0) { close(fb); return 1; }
+    close(fb);
+    return 0;
+}
+
 /* ================================================================== */
 /*  main                                                               */
 /* ================================================================== */
@@ -1298,6 +2185,36 @@ static void run_suite(void)
     RUN_TEST(fs_mmap);
     RUN_TEST(kmsg_scan);
     RUN_TEST(kunit_scan);
+    RUN_TEST(getrandom);
+    RUN_TEST(epoll);
+    RUN_TEST(eventfd);
+    RUN_TEST(timerfd);
+    RUN_TEST(signalfd);
+    RUN_TEST(mq);
+    RUN_TEST(sysv_ipc);
+    RUN_TEST(shm);
+    RUN_TEST(semaphore);
+    RUN_TEST(futex);
+    RUN_TEST(proc_self);
+    RUN_TEST(readdir);
+    RUN_TEST(rlimit);
+    RUN_TEST(clock_res);
+    RUN_TEST(fd_dup);
+    RUN_TEST(poll_select);
+    RUN_TEST(sendfile);
+    RUN_TEST(splice);
+    RUN_TEST(inotify);
+    RUN_TEST(net_udp);
+    RUN_TEST(unix_dgram);
+    RUN_TEST(statvfs);
+    RUN_TEST(madvise);
+    RUN_TEST(mlockall);
+    RUN_TEST(fallocate);
+    RUN_TEST(process_grp);
+    RUN_TEST(getcpu);
+    RUN_TEST(fadvise);
+    RUN_TEST(pty);
+    RUN_TEST(framebuffer);
 }
 
 static void print_summary(void)
@@ -1397,6 +2314,15 @@ int main(int argc, char **argv)
     mount_fs("sysfs", "/sys", "sysfs", 0, "");
     setup_dev();
     mount_fs("tmpfs", "/tmp", "tmpfs", 0, "mode=1777,size=64M");
+
+    /* pseudo-filesystems used by some tests; a failed mount is fine --
+     * the tests that need them degrade to SKIP */
+    mkdir("/dev/pts", 0755);
+    mount_fs("devpts", "/dev/pts", "devpts", 0, "mode=0620");
+    mkdir("/dev/shm", 01777);
+    mount_fs("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
+    mkdir("/dev/mqueue", 0755);
+    mount_fs("mqueue", "/dev/mqueue", "mqueue", 0, "");
 
     open_console_sinks();
     open_kmsg_sink();

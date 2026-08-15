@@ -16,12 +16,20 @@ libs, no external tools). It:
    *all* of them, plus `/dev/kmsg` so the log survives into `dmesg`.
    The preferred console (flag `C` in `/proc/consoles`) is not re-opened,
    so lines are never doubled on the same UART.
-3. runs a 21-test suite, each reporting `[PASS]` / `[FAIL]` / `[SKIP]`:
+3. runs a 51-test suite, each reporting `[PASS]` / `[FAIL]` / `[SKIP]`:
    sysinfo, procfs/sysfs integrity, device nodes, tmpfs ops + stress,
    malloc churn, mmap anon + mlock, CPU arithmetic + threads, scheduler,
    timers/hrtimers, signals, pipe IPC, fork+exec, fork storm, loopback
    TCP + AF_UNIX, mmap file I/O, kernel-log scan (Oops/BUG/WARNING/KASAN),
-   KUnit scan (when built into the kernel)
+   KUnit scan (when built into the kernel), plus a second batch that
+   exercises more kernel facilities: getrandom, epoll, eventfd, timerfd,
+   signalfd, POSIX message queues, SysV IPC (sem/sh/msg), shared memory
+   via /dev/shm, POSIX semaphores, futex, /proc/self detail, directory
+   enumeration, rlimits, clock resolution, fd duplication, poll/select,
+   sendfile, splice, inotify, UDP loopback, AF_UNIX datagrams, statvfs,
+   madvise, mlockall, fallocate, process groups, sched_getcpu,
+   posix_fadvise, pseudo-terminals, and a raw framebuffer test (SKIPs
+   when no /dev/fb0 exists, e.g. headless systems)
 4. prints a summary and then sleeps forever (or powers off / reboots /
    panics — see knobs below)
 
