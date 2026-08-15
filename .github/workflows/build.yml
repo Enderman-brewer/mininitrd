@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build initramfs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cpio zstd xz-utils
+
+      - name: Build all initramfs variants
+        run: make -s all initramfs.cpio.zst initramfs.cpio.xz
+
+      - name: Verify output
+        run: |
+          set -e
+          ls -lh initramfs.cpio initramfs.cpio.gz initramfs.cpio.zst initramfs.cpio.xz
+          test -x init
+          test "$(file -b init | grep -o 'statically linked')" = "statically linked"
+          for f in init hello; do
+            cpio -it < initramfs.cpio | grep -qx "$f"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: initramfs
+          path: |
+            initramfs.cpio
+            initramfs.cpio.gz
+            initramfs.cpio.zst
+            initramfs.cpio.xz
+          if-no-files-found: error
