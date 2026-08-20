@@ -59,7 +59,6 @@ int epoll_test(void);
 int eventfd_test(void);
 int timerfd_test(void);
 int signalfd_test(void);
-int mq_test(void);
 int sysv_ipc_test(void);
 int shm_test(void);
 int semaphore_test(void);

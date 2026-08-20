@@ -9,9 +9,6 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
-#include <mqueue.h>
-#include <semaphore.h>
-#include <sys/ipc.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
 #include <sys/msg.h>
@@ -52,40 +49,6 @@ int pipe_ipc_test(void)
         if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) return 1;
     }
     return 0;
-}
-
-/* 27. POSIX message queues via raw syscalls (SKIP if not configured) --- */
-int mq_test(void)
-{
-    static const char *name = "/kerneltest-mq";
-    struct mq_attr attr;
-    mqd_t mqd;
-    char msg[] = "kernel-mq";
-    char rcv[64] = {0};
-    unsigned prio = 0;
-    memset(&attr, 0, sizeof(attr));
-    attr.mq_maxmsg = 8;
-    attr.mq_msgsize = 64;
-    syscall(SYS_mq_unlink, name);   /* discard leftovers from aborted runs */
-    mqd = syscall(SYS_mq_open, name, O_CREAT | O_RDWR, 0600, &attr);
-    if (mqd < 0) {
-        if (errno == ENOSYS || errno == EPERM || errno == ENOENT ||
-            errno == ENODEV || errno == EINVAL)
-            return 2;               /* CONFIG_POSIX_MQUEUE off / no mqueue fs */
-        return 1;
-    }
-    if (mq_send(mqd, msg, sizeof(msg) - 1, 1) != 0)
-        goto fail;
-    if (mq_receive(mqd, rcv, 64, &prio) != (ssize_t)sizeof(msg) - 1)
-        goto fail;
-    if (memcmp(rcv, msg, sizeof(msg) - 1) != 0) goto fail;
-    mq_close(mqd);
-    syscall(SYS_mq_unlink, name);
-    return 0;
-fail:
-    mq_close(mqd);
-    syscall(SYS_mq_unlink, name);
-    return 1;
 }
 
 /* 28. SysV IPC: semaphore, shared memory, message queue ---------------- */

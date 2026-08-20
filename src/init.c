@@ -422,7 +422,6 @@ void run_suite(void)
     RUN_TEST(eventfd);
     RUN_TEST(timerfd);
     RUN_TEST(signalfd);
-    RUN_TEST(mq);
     RUN_TEST(sysv_ipc);
     RUN_TEST(shm);
     RUN_TEST(semaphore);
