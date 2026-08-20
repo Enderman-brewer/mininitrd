@@ -17,9 +17,23 @@ LDLIBS  += -pthread
 
 all: initramfs.cpio initramfs.cpio.gz
 
-SRCS = src/init.c
+SRCS = src/init.c \
+       src/test_sysinfo.c \
+       src/test_fs.c \
+       src/test_mem.c \
+       src/test_cpu.c \
+       src/test_time.c \
+       src/test_signal.c \
+       src/test_ipc.c \
+       src/test_net.c \
+       src/test_process.c \
+       src/test_io.c \
+       src/test_dev.c \
+       src/test_ramify.c
 
-init: $(SRCS)
+HDRS = src/init.h
+
+init: $(SRCS) $(HDRS)
 	$(CROSS)$(CC) $(CFLAGS) -I src -o $@ $(SRCS) $(LDLIBS)
 	@ls -lh $@
 
