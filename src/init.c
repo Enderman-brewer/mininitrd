@@ -77,7 +77,7 @@ double now_s(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
-static void sink_write(const char *s, size_t n)
+void sink_write(const char *s, size_t n)
 {
     int i;
     if (n == 0) return;

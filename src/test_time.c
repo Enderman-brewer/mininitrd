@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <time.h>
 #include <sys/timerfd.h>
 
