@@ -508,7 +508,7 @@ void end_behavior(void)
         int fd = open("/proc/sysrq-trigger", O_WRONLY);
         logts("panic_on_fail: triggering kernel panic\n");
         if (fd >= 0) {
-            (void)write(fd, "c", 1);
+            if (write(fd, "c", 1) != 1) {} /* best-effort sysrq */
             close(fd);
         }
     }
@@ -534,8 +534,7 @@ void end_behavior(void)
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--exec-child") == 0) {
-        /* marker for the exec() self-test */
-        (void)write(STDOUT_FILENO, "EXECOK", 6);
+        if (write(STDOUT_FILENO, "EXECOK", 6) != 6) {} /* marker for exec self-test */
         _exit(0);
     }
 

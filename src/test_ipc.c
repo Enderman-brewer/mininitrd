@@ -9,6 +9,8 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <semaphore.h>
+#include <sys/ipc.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
 #include <sys/msg.h>

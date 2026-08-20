@@ -151,7 +151,7 @@ int ramify_regression_test(void)
             /* Child: read via distinct fd */
             fd = open(RAMIFY_TEST_FILE, O_RDONLY);
             if (fd >= 0) {
-                read(fd, buf, sizeof(buf));
+                (void)read(fd, buf, sizeof(buf));
                 close(fd);
             }
             /* Also try exec if we're in a race window */
