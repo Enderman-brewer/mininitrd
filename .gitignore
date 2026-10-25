@@ -1,0 +1,9 @@
+# Build outputs
+init
+hello
+rootfs/
+initramfs.cpio
+initramfs.cpio.gz
+initramfs.cpio.zst
+initramfs.cpio.xz
+*.o
