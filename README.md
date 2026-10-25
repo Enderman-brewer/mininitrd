@@ -57,6 +57,11 @@ constraint applies to that glibc, not to this code.
 
 ## Boot-test it
 
+The static glibc startup code uses AVX unconditionally, so the guest CPU must
+expose AVX. QEMU's default `qemu64` CPU does not, and every `hello` and `init`
+will die with SIGILL before `main`. `run-qemu.sh` selects `-cpu host` (KVM) or
+`-cpu max` (TCG). If you launch QEMU by hand, pass one of those too.
+
 ```sh
 ./run-qemu.sh                          # /boot/vmlinuz-linux
 KERNEL=/boot/vmlinuz-linux-lts ./run-qemu.sh
