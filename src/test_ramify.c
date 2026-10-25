@@ -124,6 +124,11 @@ int ramify_regression_test(void)
             logts("FAILED at exec %d: waitpid failed\n", i);
             return 1;
         }
+        if (WIFSIGNALED(exec_status)) {
+            logts("FAILED at exec %d: child killed by signal %d (%s)\n",
+                  i, WTERMSIG(exec_status), strsignal(WTERMSIG(exec_status)));
+            return 1;
+        }
         if (!WIFEXITED(exec_status) || WEXITSTATUS(exec_status) != 0) {
             logts("FAILED at exec %d: child exited with status %d\n",
                   i, WEXITSTATUS(exec_status));
