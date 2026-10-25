@@ -82,7 +82,6 @@ int process_grp_test(void);
 int getcpu_test(void);
 int fadvise_test(void);
 int pty_test(void);
-int framebuffer_test(void);
 int perms_test(void);
 int ramify_regression_test(void);
 
