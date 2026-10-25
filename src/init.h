@@ -83,6 +83,22 @@ int getcpu_test(void);
 int fadvise_test(void);
 int pty_test(void);
 int perms_test(void);
+int memfd_test(void);
+int mremap_test(void);
+int mprotect_test(void);
+int affinity_test(void);
+int locks_test(void);
+int links_test(void);
+int xattr_test(void);
+int fsync_test(void);
+int unshare_uts_test(void);
+int chroot_test(void);
+int prctl_test(void);
+int pidfd_test(void);
+int sigaltstack_test(void);
+int sigchld_test(void);
+int sigmask_test(void);
+int clock_mono_test(void);
 int ramify_regression_test(void);
 
 #endif

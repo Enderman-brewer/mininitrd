@@ -29,7 +29,8 @@ SRCS = src/init.c \
        src/test_process.c \
        src/test_io.c \
        src/test_dev.c \
-       src/test_ramify.c
+       src/test_ramify.c \
+       src/test_extra.c
 
 HDRS = src/init.h
 
