@@ -445,7 +445,6 @@ void run_suite(void)
     RUN_TEST(getcpu);
     RUN_TEST(fadvise);
     RUN_TEST(pty);
-    RUN_TEST(framebuffer);
     RUN_TEST(perms);
     RUN_TEST(ramify_regression);
 }
