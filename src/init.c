@@ -446,6 +446,22 @@ void run_suite(void)
     RUN_TEST(fadvise);
     RUN_TEST(pty);
     RUN_TEST(perms);
+    RUN_TEST(memfd);
+    RUN_TEST(mremap);
+    RUN_TEST(mprotect);
+    RUN_TEST(affinity);
+    RUN_TEST(locks);
+    RUN_TEST(links);
+    RUN_TEST(xattr);
+    RUN_TEST(fsync);
+    RUN_TEST(unshare_uts);
+    RUN_TEST(chroot);
+    RUN_TEST(prctl);
+    RUN_TEST(pidfd);
+    RUN_TEST(sigaltstack);
+    RUN_TEST(sigchld);
+    RUN_TEST(sigmask);
+    RUN_TEST(clock_mono);
     RUN_TEST(ramify_regression);
 }
 
