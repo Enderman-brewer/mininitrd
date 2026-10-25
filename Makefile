@@ -37,7 +37,11 @@ init: $(SRCS) $(HDRS)
 	$(CROSS)$(CC) $(CFLAGS) -I src -o $@ $(SRCS) $(LDLIBS)
 	@ls -lh $@
 
-rootfs: init
+hello: src/hello.c
+	$(CROSS)$(CC) $(CFLAGS) -o $@ $<
+	@ls -lh $@
+
+rootfs: init hello
 	rm -rf rootfs
 	mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/tmp
 	cp init rootfs/init
@@ -56,7 +60,7 @@ initramfs.cpio.xz: initramfs.cpio
 	xz -9 -c initramfs.cpio > initramfs.cpio.xz
 
 clean:
-	rm -rf rootfs init initramfs.cpio initramfs.cpio.gz \
+	rm -rf rootfs init hello initramfs.cpio initramfs.cpio.gz \
 	       initramfs.cpio.zst initramfs.cpio.xz
 
 .PHONY: all clean
